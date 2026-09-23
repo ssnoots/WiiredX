@@ -1,7 +1,3 @@
-#-------------------------------------------------------------------------------
-.SUFFIXES:
-#-------------------------------------------------------------------------------
-
 ifeq ($(strip $(DEVKITPRO)),)
 $(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/devkitpro")
 endif
@@ -11,22 +7,14 @@ TOPDIR ?= $(CURDIR)
 include $(DEVKITPRO)/wups/share/wups_rules
 
 WUT_ROOT := $(DEVKITPRO)/wut
-#-------------------------------------------------------------------------------
-# TARGET is the name of the output
-# BUILD is the directory where object files & intermediate files will be placed
-# SOURCES is a list of directories containing source code
-# DATA is a list of directories containing data files
-# INCLUDES is a list of directories containing header files
-#-------------------------------------------------------------------------------
+
 TARGET		:=	wiiredx
 BUILD		:=	build
 SOURCES		:=	src
 DATA		:=	data
 INCLUDES	:=	src
 
-#-------------------------------------------------------------------------------
-# options for code generation
-#-------------------------------------------------------------------------------
+
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(MACHDEP)
 
@@ -49,18 +37,10 @@ endif
 
 LIBS	:= -lwups -lwut 
 
-#-------------------------------------------------------------------------------
-# list of directories containing libraries, this must be the top level
-# containing include and lib
-#-------------------------------------------------------------------------------
+
 LIBDIRS	:= $(PORTLIBS) $(WUPS_ROOT) $(WUT_ROOT)
 
-#-------------------------------------------------------------------------------
-# no real need to edit anything past this point unless you need to add additional
-# rules for different file extensions
-#-------------------------------------------------------------------------------
-ifneq ($(BUILD),$(notdir $(CURDIR)))
-#-------------------------------------------------------------------------------
+
 
 export OUTPUT	:=	$(CURDIR)/$(TARGET)
 export TOPDIR	:=	$(CURDIR)
@@ -75,19 +55,15 @@ CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
 SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
 
-#-------------------------------------------------------------------------------
-# use CXX for linking C++ projects, CC for standard C
-#-------------------------------------------------------------------------------
+
 ifeq ($(strip $(CPPFILES)),)
-#-------------------------------------------------------------------------------
+
 	export LD	:=	$(CC)
-#-------------------------------------------------------------------------------
-else
-#-------------------------------------------------------------------------------
+
 	export LD	:=	$(CXX)
-#-------------------------------------------------------------------------------
+
 endif
-#-------------------------------------------------------------------------------
+
 
 export OFILES_BIN	:=	$(addsuffix .o,$(BINFILES))
 export OFILES_SRC	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
@@ -102,27 +78,25 @@ export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
 .PHONY: $(BUILD) clean all
 
-#-------------------------------------------------------------------------------
+
 all: $(BUILD)
 
 $(BUILD):
 	@$(shell [ ! -d $(BUILD) ] && mkdir -p $(BUILD))
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
-#-------------------------------------------------------------------------------
+
 clean:
 	@echo clean ...
 	@rm -fr $(BUILD) $(TARGET).wps $(TARGET).elf
 
-#-------------------------------------------------------------------------------
+
 else
 .PHONY:	all
 
 DEPENDS	:=	$(OFILES:.o=.d)
 
-#-------------------------------------------------------------------------------
-# main targets
-#-------------------------------------------------------------------------------
+
 all	:	$(OUTPUT).wps
 
 $(OUTPUT).wps	:	$(OUTPUT).elf
@@ -130,16 +104,14 @@ $(OUTPUT).elf	:	$(OFILES)
 
 $(OFILES_SRC)	: $(HFILES_BIN)
 
-#-------------------------------------------------------------------------------
-# you need a rule like this for each extension you use as binary data
-#-------------------------------------------------------------------------------
+
 %.bin.o	%_bin.h :	%.bin
-#-------------------------------------------------------------------------------
+
 	@echo $(notdir $<)
 	@$(bin2o)
 
 -include $(DEPENDS)
 
-#-------------------------------------------------------------------------------
+
 endif
-#-------------------------------------------------------------------------------
+
