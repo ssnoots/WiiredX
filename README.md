@@ -47,7 +47,7 @@ Open the plugin menu with **L + D-pad Down + Minus** on the GamePad, then choose
 |Guide button opens HOME Menu|on / off|on||
 |Keep screen awake|on / off|on|Stops the console dimming while you're playing|
 |Rumble|on / off|on|Self explanatory|
-|Rumble strength|0–100%|55%|Xbox motors are stronger than the GamePad's 55% felt fine to me|
+|Rumble strength|0–100%|55%|Xbox motors are stronger than the GamePad's, 55% felt fine to me|
 
 ## Which mode should I use?
 
@@ -69,8 +69,8 @@ To watch the plugin's log output while it runs, listen on UDP port 4405 from a P
 
 ```powershell
 $u = New-Object System.Net.Sockets.UdpClient 4405
-$e = New-Object System.Net.IPEndPoint (\[IPAddress]::Any, 0)
-while ($true) { \[Text.Encoding]::ASCII.GetString($u.Receive(\[ref]$e)) }
+$e = New-Object System.Net.IPEndPoint ([IPAddress]::Any, 0)
+while ($true) { [Text.Encoding]::ASCII.GetString($u.Receive([ref]$e)) }
 ```
 
 ## How it works
