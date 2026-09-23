@@ -63,7 +63,7 @@ Open the plugin menu with **L + D-pad Down + Minus** on the GamePad, then choose
 * **The touchscreen still needs the real GamePad.**
 * **The system's controller pairing screen won't show the controller.** It isn't a real Bluetooth controller, so it isn't listed there.
 
-## Building from source
+## DEBUG
 
 To watch the plugin's log output while it runs, listen on UDP port 4405 from a PC on the same network. On Windows:
 
