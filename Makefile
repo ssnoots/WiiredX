@@ -1,3 +1,5 @@
+.SUFFIXES:
+
 ifeq ($(strip $(DEVKITPRO)),)
 $(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/devkitpro")
 endif
@@ -7,13 +9,11 @@ TOPDIR ?= $(CURDIR)
 include $(DEVKITPRO)/wups/share/wups_rules
 
 WUT_ROOT := $(DEVKITPRO)/wut
-
 TARGET		:=	wiiredx
 BUILD		:=	build
 SOURCES		:=	src
 DATA		:=	data
 INCLUDES	:=	src
-
 
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(MACHDEP)
@@ -37,10 +37,9 @@ endif
 
 LIBS	:= -lwups -lwut 
 
-
 LIBDIRS	:= $(PORTLIBS) $(WUPS_ROOT) $(WUT_ROOT)
 
-
+ifneq ($(BUILD),$(notdir $(CURDIR)))
 
 export OUTPUT	:=	$(CURDIR)/$(TARGET)
 export TOPDIR	:=	$(CURDIR)
@@ -55,15 +54,11 @@ CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
 SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
 
-
 ifeq ($(strip $(CPPFILES)),)
-
 	export LD	:=	$(CC)
-
+else
 	export LD	:=	$(CXX)
-
 endif
-
 
 export OFILES_BIN	:=	$(addsuffix .o,$(BINFILES))
 export OFILES_SRC	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
@@ -78,24 +73,20 @@ export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
 .PHONY: $(BUILD) clean all
 
-
 all: $(BUILD)
 
 $(BUILD):
 	@$(shell [ ! -d $(BUILD) ] && mkdir -p $(BUILD))
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
-
 clean:
 	@echo clean ...
 	@rm -fr $(BUILD) $(TARGET).wps $(TARGET).elf
-
 
 else
 .PHONY:	all
 
 DEPENDS	:=	$(OFILES:.o=.d)
-
 
 all	:	$(OUTPUT).wps
 
@@ -104,14 +95,10 @@ $(OUTPUT).elf	:	$(OFILES)
 
 $(OFILES_SRC)	: $(HFILES_BIN)
 
-
 %.bin.o	%_bin.h :	%.bin
-
 	@echo $(notdir $<)
 	@$(bin2o)
 
 -include $(DEPENDS)
 
-
 endif
-
