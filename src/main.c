@@ -1,5 +1,5 @@
 
- /* WiiredX - v0.6.5 (rumble works in Pro Controller mode too)**
+ /* WiiredX - v0.7.1 (Pro mode drives the Wii U Menu as a Pro Controller again)**
    Aroma plugin: wired Xbox One controllers on Wii U. Plug and play.
  
    A background thread owns the USB side (find pad, wake it, read packets).
@@ -28,7 +28,7 @@
 
 WUPS_PLUGIN_NAME("WiiredX");
 WUPS_PLUGIN_DESCRIPTION("Wired Xbox One controllers on Wii U. Plug in and play.");
-WUPS_PLUGIN_VERSION("v0.6.5");
+WUPS_PLUGIN_VERSION("v0.7.1");
 WUPS_PLUGIN_AUTHOR("snoots");
 WUPS_PLUGIN_LICENSE("MIT");
 
@@ -39,19 +39,21 @@ WUPS_USE_STORAGE("wiiredx");          /* settings are saved on the SD card under
 #define LAYOUT_POSITION 0   /* Xbox A (bottom button) acts as Nintendo B (bottom button) */
 #define LAYOUT_LABEL    1   /* Xbox A acts as Nintendo A */
 
-#define ACT_GAMEPAD 0   
+#define ACT_GAMEPAD 0
 #define ACT_PRO     1   /* pretend to be a Pro Controller on its own player slot */
 
 static bool    sCfgEnabled     = true;
 static int32_t sCfgActAs       = ACT_GAMEPAD;
-static int32_t sCfgProSlot     = 1;    
+static int32_t sCfgProSlot     = 1;
 static int32_t sCfgLayout      = LAYOUT_POSITION;
-static int32_t sCfgDeadzone    = 15;   
-static int32_t sCfgTriggerPct  = 30;   
+static int32_t sCfgDeadzone    = 15;
+static int32_t sCfgTriggerPct  = 30;
 static bool    sCfgRumble      = true;
-static int32_t sCfgRumblePct   = 55;   
-static bool    sCfgGuideHome   = true; 
-static bool    sCfgKeepAwake   = true; 
+static int32_t sCfgRumblePct   = 55;
+static bool    sCfgGuideHome   = true;
+static bool    sCfgKeepAwake   = true;
+static bool    sCfgNetLog      = false;
+static bool    sCfgVerbose     = false;
 
 #define STICK_EMU_LEVEL   0.5f
 
@@ -68,7 +70,7 @@ static bool    sCfgKeepAwake   = true;
 
 typedef struct {
    volatile bool     connected;
-   volatile uint8_t  btn0, btn1;      
+   volatile uint8_t  btn0, btn1;
    volatile uint16_t lt, rt;
    volatile int16_t  lx, ly, rx, ry;
    volatile bool     guide;
@@ -76,19 +78,17 @@ typedef struct {
 
 static PadState sPad;
 
-
-#define AWAKE_WINDOW_MS 60000
+#define AWAKE_WINDOW_MS (5 * 60 * 1000)
 
 static volatile OSTime sLastInput;
 static bool            sDimSuppressed;
-static bool            sDimWasOn;      
+static volatile bool   sReassertAwake;
+static bool            sDimWasOn;
 static bool            sApdWasOn;
 
-
-static uint32_t      sPrevHold;    
+static uint32_t      sPrevHold;
 static bool          sPrevGuide;
-static volatile bool sInOverlay;   
-
+static volatile bool sInOverlay;
 
 typedef struct {
    UhsHandle            handle;
@@ -117,15 +117,17 @@ static volatile bool    sThreadDone;
 static volatile bool    sRumbleDone;
 
 static uint8_t           sRumblePattern[15];
-static volatile uint8_t  sRumbleLen;          
+static volatile uint8_t  sRumbleLen;
 static volatile OSTime   sRumbleStart;
 static bool             sLogInit;
 
-static bool gamePadMode(void);          
+static volatile uint32_t sStatKpad, sStatKpadEx, sStatWpadRead, sStatWpadOtherFmt, sStatProbe, sStatVpad;
+static volatile int32_t  sStatLastFmt = -1;
+static volatile bool     sGameWantsPro;
+static bool gamePadMode(void);
 static void resetAnnounce(void);
 static void announceIfNeeded(int32_t chan);
-static void enableProSupport(void);     
-
+static void enableProSupport(void);
 
 static uint32_t
 msNow(void)
@@ -251,7 +253,6 @@ stopController(UsbCtx *c)
    }
 }
 
-
 static int
 stillPresent(UsbCtx *c)
 {
@@ -278,7 +279,6 @@ usbThread(int argc, const char **argv)
    UsbCtx *c = sCtx;
 
    while (sRun) {
-      
       if (!findController(c)) {
          WHBLogPrintf("wiiredx %u: no pad found", msNow());
          for (int i = 0; i < 3 && sRun; i++) {
@@ -299,7 +299,6 @@ usbThread(int argc, const char **argv)
       resetAnnounce();
       sPad.connected = true;
 
-      
       const char *reason = "stopping";
       uint32_t lastCode  = 0;
 
@@ -308,7 +307,7 @@ usbThread(int argc, const char **argv)
                                                           ENDPOINT_TRANSFER_IN,
                                                           c->inBuf, PKT_SIZE, TIMEOUT_NONE);
          if (ret < 0) {
-            if ((uint32_t)ret != lastCode) {          
+            if ((uint32_t)ret != lastCode) {
                lastCode = (uint32_t)ret;
                WHBLogPrintf("wiiredx %u: read error %08X (%s)", msNow(), (unsigned)ret,
                             sInOverlay ? "in background" : "in foreground");
@@ -324,8 +323,8 @@ usbThread(int argc, const char **argv)
 
          const uint8_t *d = c->inBuf;
 
-         if (d[0] == 0x20 && ret >= 18) {                 
-            sLastInput = OSGetTime();                     
+         if (d[0] == 0x20 && ret >= 18) {
+            sLastInput = OSGetTime();
             sPad.btn0 = d[4];
             sPad.btn1 = d[5];
             sPad.lt   = d[6]  | (d[7]  << 8);
@@ -334,9 +333,9 @@ usbThread(int argc, const char **argv)
             sPad.ly   = (int16_t)(d[12] | (d[13] << 8));
             sPad.rx   = (int16_t)(d[14] | (d[15] << 8));
             sPad.ry   = (int16_t)(d[16] | (d[17] << 8));
-         } else if (d[0] == 0x07 && ret >= 5) {           
+         } else if (d[0] == 0x07 && ret >= 5) {
             sPad.guide = (d[4] & 0x01) != 0;
-            if (d[1] & 0x10) {                            
+            if (d[1] & 0x10) {
                static const uint8_t ack[13] = { 0x01, 0x20, 0x00, 0x09, 0x00, 0x07, 0x20,
                                                 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 };
                sendPacket(c, ack, sizeof(ack), d[2]);
@@ -372,7 +371,7 @@ rumbleLevel(void)
    }
    uint32_t bit = (uint32_t)(ms * 120 / 1000);
    if (bit >= len) {
-      return 0;                       
+      return 0;
    }
    int ones = 0;
    for (uint32_t i = bit; i < bit + 4 && i < len; i++) {
@@ -391,19 +390,35 @@ sendRumble(UsbCtx *c, int level)
    }
    uint8_t *b = c->rumbleBuf;
    memset(b, 0, PKT_SIZE);
-   b[0]  = 0x09;                              
+   b[0]  = 0x09;
    b[2]  = c->rumbleSeq++;
-   b[3]  = 0x09;                              
-   b[5]  = 0x0F;                              
-   b[8]  = (uint8_t)(sCfgRumblePct * level / 4);            
-   b[9]  = (uint8_t)(sCfgRumblePct * 65 / 100 * level / 4); 
-   b[10] = 0xFF;                              
-   b[11] = 0x00;                              
-   b[12] = 0xFF;                              
+   b[3]  = 0x09;
+   b[5]  = 0x0F;
+   b[8]  = (uint8_t)(sCfgRumblePct * level / 4);
+   b[9]  = (uint8_t)(sCfgRumblePct * 65 / 100 * level / 4);
+   b[10] = 0xFF;
+   b[11] = 0x00;
+   b[12] = 0xFF;
    UhsSubmitInterruptRequest(&c->handle, c->ifHandle, c->outEp,
                              ENDPOINT_TRANSFER_OUT, b, 13, TIMEOUT_NONE);
 }
 
+static void
+reportPadCalls(void)
+{
+   static int seconds;
+   if (!sCfgVerbose || gamePadMode() || !sPad.connected || sInOverlay || ++seconds < 5) {
+      return;
+   }
+   seconds = 0;
+   WHBLogPrintf("wiiredx %u: slot %d calls/5s%s: KPADRead %u, KPADReadEx %u, WPADRead(pro) %u, "
+                "WPADRead(other fmt %d) %u, WPADProbe %u, VPADRead %u",
+                msNow(), (int)sCfgProSlot, sGameWantsPro ? " [game wants Pro]" : "",
+                (unsigned)sStatKpad, (unsigned)sStatKpadEx,
+                (unsigned)sStatWpadRead, (int)sStatLastFmt, (unsigned)sStatWpadOtherFmt,
+                (unsigned)sStatProbe, (unsigned)sStatVpad);
+   sStatKpad = sStatKpadEx = sStatWpadRead = sStatWpadOtherFmt = sStatProbe = sStatVpad = 0;
+}
 
 static void
 updateScreenAwake(void)
@@ -412,6 +427,28 @@ updateScreenAwake(void)
 
    if (sCfgKeepAwake && sCfgEnabled && sPad.connected && sLastInput) {
       wantAwake = OSTicksToMilliseconds(OSGetTime() - sLastInput) < AWAKE_WINDOW_MS;
+   }
+
+   if (wantAwake && sDimSuppressed) {
+      static int check;
+      bool force = sReassertAwake;
+      sReassertAwake = false;
+      if (force || ++check >= 10) {
+         check = 0;
+         uint32_t dimOn = 0, apdOn = 0;
+         IMIsDimEnabled(&dimOn);
+         IMIsAPDEnabled(&apdOn);
+         if ((sDimWasOn && dimOn) || (sApdWasOn && apdOn)) {
+            if (sDimWasOn && dimOn) {
+               IMDisableDim();
+            }
+            if (sApdWasOn && apdOn) {
+               IMDisableAPD();
+            }
+            WHBLogPrintf("wiiredx %u: system re-enabled dimming, switched it off again", msNow());
+         }
+      }
+      return;
    }
    if (wantAwake == sDimSuppressed) {
       return;
@@ -449,6 +486,7 @@ rumbleThread(int argc, const char **argv)
       if (++awakeTick >= 50) {          /* about once a second i think*/
          awakeTick = 0;
          updateScreenAwake();
+         reportPadCalls();
       }
       if (!sPad.connected) {
          lastLevel = 0;
@@ -456,7 +494,6 @@ rumbleThread(int argc, const char **argv)
       }
       int level  = (sCfgRumble && sCfgEnabled) ? rumbleLevel() : 0;
       OSTime now = OSGetTime();
-      
       bool refresh = level && OSTicksToMilliseconds(now - lastSend) > 1000;
       if (level != lastLevel || refresh) {
          sendRumble(c, level);
@@ -466,7 +503,7 @@ rumbleThread(int argc, const char **argv)
    }
 
    if (lastLevel && sPad.connected) {
-      sendRumble(c, 0);               
+      sendRumble(c, 0);
    }
    sRumbleDone = true;
    return 0;
@@ -484,7 +521,6 @@ stickAxis(int16_t raw)
    if (a < dz) {
       return 0.0f;
    }
-   
    a = (a - dz) / (1.0f - dz);
    return v < 0 ? -a : a;
 }
@@ -492,22 +528,20 @@ stickAxis(int16_t raw)
 /*pro controller mode*/
 
 static uint32_t            sProPrevHold;
-static bool                sProSupportOn;   
+
+static bool                sProSupportOn;
+static volatile bool       sOurUrccCall;
 static WPADConnectCallback sGameConnectCb[4];
-static int                 sAnnounceCount[4];   
-static OSTime              sNextAnnounce[4];    
-
-
-static bool
-isWiiUMenu(void)
-{
-   return (OSGetTitleID() & ~0xFFull) == 0x0005001010040000ull;
-}
+static WPADExtensionCallback sGameExtCb[4];
+static volatile OSTime     sLastKpadRead[4];
+static volatile int32_t    sGameFmt[4] = { -1, -1, -1, -1 };
+static int                 sAnnounceCount[4];
+static OSTime              sNextAnnounce[4];
 
 static bool
 gamePadMode(void)
 {
-   return sCfgActAs == ACT_GAMEPAD || isWiiUMenu();
+   return sCfgActAs == ACT_GAMEPAD;
 }
 
 static bool
@@ -524,18 +558,18 @@ buildProButtons(float lx, float ly, float rx, float ry)
    uint8_t b0 = sPad.btn0, b1 = sPad.btn1;
 
    if (sCfgLayout == LAYOUT_POSITION) {
-      if (b0 & 0x10) h |= WPAD_PRO_BUTTON_B;   
-      if (b0 & 0x20) h |= WPAD_PRO_BUTTON_A;   
-      if (b0 & 0x40) h |= WPAD_PRO_BUTTON_Y;   
-      if (b0 & 0x80) h |= WPAD_PRO_BUTTON_X;   
+      if (b0 & 0x10) h |= WPAD_PRO_BUTTON_B;
+      if (b0 & 0x20) h |= WPAD_PRO_BUTTON_A;
+      if (b0 & 0x40) h |= WPAD_PRO_BUTTON_Y;
+      if (b0 & 0x80) h |= WPAD_PRO_BUTTON_X;
    } else {
       if (b0 & 0x10) h |= WPAD_PRO_BUTTON_A;
       if (b0 & 0x20) h |= WPAD_PRO_BUTTON_B;
       if (b0 & 0x40) h |= WPAD_PRO_BUTTON_X;
       if (b0 & 0x80) h |= WPAD_PRO_BUTTON_Y;
    }
-   if (b0 & 0x04) h |= WPAD_PRO_BUTTON_PLUS;   
-   if (b0 & 0x08) h |= WPAD_PRO_BUTTON_MINUS;  
+   if (b0 & 0x04) h |= WPAD_PRO_BUTTON_PLUS;
+   if (b0 & 0x08) h |= WPAD_PRO_BUTTON_MINUS;
 
    if (b1 & 0x01) h |= WPAD_PRO_BUTTON_UP;
    if (b1 & 0x02) h |= WPAD_PRO_BUTTON_DOWN;
@@ -588,7 +622,6 @@ fillProStatus(KPADStatus *k)
    k->pro.charging     = 0;
 }
 
-
 static void
 enableProSupport(void)
 {
@@ -597,11 +630,11 @@ enableProSupport(void)
    }
    sProSupportOn = true;
    KPADInit();
+   sOurUrccCall = true;
    WPADEnableURCC(TRUE);
+   sOurUrccCall = false;
    WHBLogPrintf("wiiredx %u: turned on Pro Controller support", msNow());
 }
-
-
 
 #define ANNOUNCE_TRIES 4
 
@@ -617,7 +650,7 @@ resetAnnounce(void)
 static void
 announceIfNeeded(int32_t chan)
 {
-   if (chan < 0 || chan > 3 || !sGameConnectCb[chan] ||
+   if (chan < 0 || chan > 3 || (!sGameConnectCb[chan] && !sGameExtCb[chan]) ||
        sAnnounceCount[chan] >= ANNOUNCE_TRIES) {
       return;
    }
@@ -630,9 +663,113 @@ announceIfNeeded(int32_t chan)
    int n = sAnnounceCount[chan]++;
    sNextAnnounce[chan] = now + (OSTime)OSMillisecondsToTicks(gapMs[n]);
 
-   WHBLogPrintf("wiiredx %u: telling the game a Pro Controller connected on slot %d (try %d)",
-                msNow(), (int)chan + 1, n + 1);
-   sGameConnectCb[chan]((WPADChan)chan, WPAD_ERROR_NONE);
+   bool kpadManaged = sLastKpadRead[chan] &&
+                      OSTicksToMilliseconds(now - sLastKpadRead[chan]) < 1000;
+   bool fireExt     = sGameExtCb[chan] && !kpadManaged;
+
+   WHBLogPrintf("wiiredx %u: telling the game a Pro Controller connected on slot %d (try %d%s)",
+                msNow(), (int)chan + 1, n + 1, fireExt ? ", + extension callback" : "");
+   if (sGameConnectCb[chan]) {
+      sGameConnectCb[chan]((WPADChan)chan, WPAD_ERROR_NONE);
+   }
+
+   if (fireExt) {
+      sGameExtCb[chan]((WPADChan)chan, WPAD_EXT_PRO_CONTROLLER);
+   }
+}
+
+static int16_t
+rawAxis(float v)
+{
+   return (int16_t)(v * 2047.0f);
+}
+
+static void
+fillRawPro(WPADStatusProController *st)
+{
+   memset(st, 0, sizeof(*st));
+
+   float lx = stickAxis(sPad.lx), ly = stickAxis(sPad.ly);
+   float rx = stickAxis(sPad.rx), ry = stickAxis(sPad.ry);
+
+   st->core.extensionType = WPAD_EXT_PRO_CONTROLLER;
+   st->core.error         = 0;
+   st->buttons            = buildProButtons(lx, ly, rx, ry);
+   st->leftStick.x        = rawAxis(lx);
+   st->leftStick.y        = rawAxis(ly);
+   st->rightStick.x       = rawAxis(rx);
+   st->rightStick.y       = rawAxis(ry);
+   st->charging           = FALSE;
+   st->wired              = TRUE;
+}
+
+DECL_FUNCTION(void, WPADRead, WPADChan chan, WPADStatus *status)
+{
+   real_WPADRead(chan, status);
+
+   if (proSlotIs((int32_t)chan) && status) {
+
+      int32_t fmt = sGameFmt[chan];
+      if (fmt < 0) {
+         fmt = (int32_t)WPADGetDataFormat(chan);
+      }
+
+      if (fmt == WPAD_FMT_PRO_CONTROLLER || sGameWantsPro) {
+         sStatWpadRead++;
+         fillRawPro((WPADStatusProController *)status);
+      } else {
+
+         status->extensionType = WPAD_EXT_PRO_CONTROLLER;
+         status->error         = 0;
+         sStatWpadOtherFmt++;
+         sStatLastFmt = fmt;
+      }
+   }
+}
+
+DECL_FUNCTION(void, WPADEnableURCC, BOOL enable)
+{
+   if (!sOurUrccCall) {
+      sGameWantsPro = enable ? true : false;
+      WHBLogPrintf("wiiredx %u: game %s Pro Controller support itself",
+                   msNow(), enable ? "turned on" : "turned off");
+   }
+   real_WPADEnableURCC(enable);
+}
+
+DECL_FUNCTION(WPADError, WPADSetDataFormat, WPADChan channel, WPADDataFormat format)
+{
+   WPADError r = real_WPADSetDataFormat(channel, format);
+   if ((int32_t)channel >= 0 && (int32_t)channel <= 3) {
+      sGameFmt[channel] = (int32_t)format;
+      if (proSlotIs((int32_t)channel)) {
+         WHBLogPrintf("wiiredx %u: game set slot %d format %d (system said %d)",
+                      msNow(), (int)channel + 1, (int)format, (int)r);
+         r = WPAD_ERROR_NONE;
+      }
+   }
+   return r;
+}
+
+DECL_FUNCTION(WPADDataFormat, WPADGetDataFormat, WPADChan channel)
+{
+   if (proSlotIs((int32_t)channel) && sGameFmt[channel] >= 0) {
+      return (WPADDataFormat)sGameFmt[channel];
+   }
+   return real_WPADGetDataFormat(channel);
+}
+
+DECL_FUNCTION(WPADExtensionCallback, WPADSetExtensionCallback, WPADChan channel, WPADExtensionCallback callback)
+{
+   if ((int32_t)channel >= 0 && (int32_t)channel <= 3) {
+
+      if (sGameExtCb[channel] != callback) {
+         WHBLogPrintf("wiiredx %u: game registered an extension callback on slot %d",
+                      msNow(), (int)channel + 1);
+      }
+      sGameExtCb[channel] = callback;
+   }
+   return real_WPADSetExtensionCallback(channel, callback);
 }
 
 DECL_FUNCTION(uint32_t, KPADReadEx, KPADChan chan, KPADStatus *data, uint32_t count, KPADError *error)
@@ -640,6 +777,8 @@ DECL_FUNCTION(uint32_t, KPADReadEx, KPADChan chan, KPADStatus *data, uint32_t co
    uint32_t result = real_KPADReadEx(chan, data, count, error);
 
    if (proSlotIs((int32_t)chan) && data && count > 0) {
+      sStatKpadEx++;
+      sLastKpadRead[chan] = OSGetTime();
       announceIfNeeded((int32_t)chan);
       fillProStatus(&data[0]);
       if (error) {
@@ -657,6 +796,8 @@ DECL_FUNCTION(uint32_t, KPADRead, KPADChan chan, KPADStatus *data, uint32_t coun
    uint32_t result = real_KPADRead(chan, data, count);
 
    if (proSlotIs((int32_t)chan) && data && count > 0) {
+      sStatKpad++;
+      sLastKpadRead[chan] = OSGetTime();
       announceIfNeeded((int32_t)chan);
       fillProStatus(&data[0]);
       if (result == 0) {
@@ -671,6 +812,7 @@ DECL_FUNCTION(WPADError, WPADProbe, WPADChan channel, WPADExtensionType *outExte
    WPADError result = real_WPADProbe(channel, outExtensionType);
 
    if (proSlotIs((int32_t)channel)) {
+      sStatProbe++;
       announceIfNeeded((int32_t)channel);
       if (outExtensionType) {
          *outExtensionType = WPAD_EXT_PRO_CONTROLLER;
@@ -680,13 +822,14 @@ DECL_FUNCTION(WPADError, WPADProbe, WPADChan channel, WPADExtensionType *outExte
    return result;
 }
 
-
 DECL_FUNCTION(KPADConnectCallback, KPADSetConnectCallback, KPADChan chan, KPADConnectCallback callback)
 {
    if ((int32_t)chan >= 0 && (int32_t)chan <= 3) {
+      if (sGameConnectCb[chan] != callback) {
+         sAnnounceCount[chan] = 0;
+         sNextAnnounce[chan]  = 0;
+      }
       sGameConnectCb[chan] = callback;
-      sAnnounceCount[chan] = 0;          
-      sNextAnnounce[chan]  = 0;
    }
    return real_KPADSetConnectCallback(chan, callback);
 }
@@ -694,9 +837,11 @@ DECL_FUNCTION(KPADConnectCallback, KPADSetConnectCallback, KPADChan chan, KPADCo
 DECL_FUNCTION(WPADConnectCallback, WPADSetConnectCallback, WPADChan channel, WPADConnectCallback callback)
 {
    if ((int32_t)channel >= 0 && (int32_t)channel <= 3) {
+      if (sGameConnectCb[channel] != callback) {
+         sAnnounceCount[channel] = 0;
+         sNextAnnounce[channel]  = 0;
+      }
       sGameConnectCb[channel] = callback;
-      sAnnounceCount[channel] = 0;
-      sNextAnnounce[channel]  = 0;
    }
    return real_WPADSetConnectCallback(channel, callback);
 }
@@ -710,13 +855,16 @@ DECL_FUNCTION(void, WPADControlMotor, WPADChan channel, BOOL motorEnabled)
 }
 
 WUPS_MUST_REPLACE(WPADControlMotor, WUPS_LOADER_LIBRARY_PADSCORE, WPADControlMotor);
+WUPS_MUST_REPLACE(WPADRead, WUPS_LOADER_LIBRARY_PADSCORE, WPADRead);
+WUPS_MUST_REPLACE(WPADSetDataFormat, WUPS_LOADER_LIBRARY_PADSCORE, WPADSetDataFormat);
+WUPS_MUST_REPLACE(WPADEnableURCC, WUPS_LOADER_LIBRARY_PADSCORE, WPADEnableURCC);
+WUPS_MUST_REPLACE(WPADGetDataFormat, WUPS_LOADER_LIBRARY_PADSCORE, WPADGetDataFormat);
+WUPS_MUST_REPLACE(WPADSetExtensionCallback, WUPS_LOADER_LIBRARY_PADSCORE, WPADSetExtensionCallback);
 WUPS_MUST_REPLACE(KPADReadEx, WUPS_LOADER_LIBRARY_PADSCORE, KPADReadEx);
 WUPS_MUST_REPLACE(KPADRead, WUPS_LOADER_LIBRARY_PADSCORE, KPADRead);
 WUPS_MUST_REPLACE(WPADProbe, WUPS_LOADER_LIBRARY_PADSCORE, WPADProbe);
 WUPS_MUST_REPLACE(KPADSetConnectCallback, WUPS_LOADER_LIBRARY_PADSCORE, KPADSetConnectCallback);
 WUPS_MUST_REPLACE(WPADSetConnectCallback, WUPS_LOADER_LIBRARY_PADSCORE, WPADSetConnectCallback);
-
-
 
 #define KEY_ENABLED  "enabled"
 #define KEY_LAYOUT   "layout"
@@ -728,11 +876,28 @@ WUPS_MUST_REPLACE(WPADSetConnectCallback, WUPS_LOADER_LIBRARY_PADSCORE, WPADSetC
 #define KEY_ACTAS    "actAs"
 #define KEY_PROSLOT  "proSlot"
 #define KEY_AWAKE    "keepAwake"
+#define KEY_NETLOG   "netLog"
+#define KEY_VERBOSE  "verboseLog"
 
 static void onEnabled(ConfigItemBoolean *i, bool v)        { sCfgEnabled    = v; WUPSStorageAPI_StoreBool(NULL, KEY_ENABLED, v); }
 static void onRumble(ConfigItemBoolean *i, bool v)         { sCfgRumble     = v; WUPSStorageAPI_StoreBool(NULL, KEY_RUMBLE, v); }
 static void onGuide(ConfigItemBoolean *i, bool v)          { sCfgGuideHome  = v; WUPSStorageAPI_StoreBool(NULL, KEY_GUIDE, v); }
 static void onAwake(ConfigItemBoolean *i, bool v)          { sCfgKeepAwake  = v; WUPSStorageAPI_StoreBool(NULL, KEY_AWAKE, v); }
+static void onVerbose(ConfigItemBoolean *i, bool v)        { sCfgVerbose    = v; WUPSStorageAPI_StoreBool(NULL, KEY_VERBOSE, v); }
+
+static void
+onNetLog(ConfigItemBoolean *i, bool v)
+{
+   sCfgNetLog = v;
+   WUPSStorageAPI_StoreBool(NULL, KEY_NETLOG, v);
+   if (v && !sLogInit) {
+      sLogInit = WHBLogUdpInit();
+      WHBLogPrintf("wiiredx %u: network log on", msNow());
+   } else if (!v && sLogInit) {
+      WHBLogUdpDeinit();
+      sLogInit = false;
+   }
+}
 static void onLayout(ConfigItemMultipleValues *i, uint32_t v) { sCfgLayout  = (int32_t)v; WUPSStorageAPI_StoreInt(NULL, KEY_LAYOUT, (int32_t)v); }
 static void onActAs(ConfigItemMultipleValues *i, uint32_t v)  { sCfgActAs   = (int32_t)v; WUPSStorageAPI_StoreInt(NULL, KEY_ACTAS, (int32_t)v); }
 static void onProSlot(ConfigItemIntegerRange *i, int32_t v)   { sCfgProSlot = v; WUPSStorageAPI_StoreInt(NULL, KEY_PROSLOT, v); }
@@ -764,6 +929,8 @@ menuOpened(WUPSConfigCategoryHandle root)
    WUPSConfigItemBoolean_AddToCategory(root, KEY_AWAKE, "Keep screen awake", true, sCfgKeepAwake, onAwake);
    WUPSConfigItemBoolean_AddToCategory(root, KEY_RUMBLE, "Rumble", true, sCfgRumble, onRumble);
    WUPSConfigItemIntegerRange_AddToCategory(root, KEY_RUMBLEPC, "Rumble strength (%)", 55, sCfgRumblePct, 0, 100, onRumblePct);
+   WUPSConfigItemBoolean_AddToCategory(root, KEY_NETLOG, "Network log (UDP 4405)", false, sCfgNetLog, onNetLog);
+   WUPSConfigItemBoolean_AddToCategory(root, KEY_VERBOSE, "Verbose log (diagnostics)", false, sCfgVerbose, onVerbose);
    return WUPSCONFIG_API_CALLBACK_RESULT_SUCCESS;
 }
 
@@ -772,7 +939,6 @@ menuClosed(void)
 {
    WUPSStorageAPI_SaveStorage(false);      /* write changes to the SD card */
 }
-
 
 static void
 loadBool(const char *key, bool *value)
@@ -793,7 +959,6 @@ loadInt(const char *key, int32_t *value, int32_t min, int32_t max)
    }
 }
 
-
 INITIALIZE_PLUGIN()
 {
    WUPSConfigAPIOptionsV1 options = { .name = "WiiredX" };
@@ -808,15 +973,15 @@ INITIALIZE_PLUGIN()
    loadBool(KEY_RUMBLE, &sCfgRumble);
    loadBool(KEY_GUIDE, &sCfgGuideHome);
    loadBool(KEY_AWAKE, &sCfgKeepAwake);
+   loadBool(KEY_NETLOG, &sCfgNetLog);
+   loadBool(KEY_VERBOSE, &sCfgVerbose);
    loadInt(KEY_RUMBLEPC, &sCfgRumblePct, 0, 100);
    WUPSStorageAPI_SaveStorage(false);
 }
 
-
-
 ON_APPLICATION_START()
 {
-   sLogInit = WHBLogUdpInit();
+   sLogInit = sCfgNetLog ? WHBLogUdpInit() : false;
    memset(&sPad, 0, sizeof(sPad));
    uint32_t on = 0;
    sDimWasOn      = (IMIsDimEnabled(&on) == 0) && on;
@@ -830,6 +995,13 @@ ON_APPLICATION_START()
    sPrevHold     = 0;
    sProSupportOn = false;
    sProMotorOn   = false;
+   sGameWantsPro = false;
+   for (int i = 0; i < 4; i++) {
+      sLastKpadRead[i]  = 0;
+      sGameFmt[i]       = -1;
+      sGameExtCb[i]     = NULL;
+      sGameConnectCb[i] = NULL;
+   }
 
    UsbCtx *c = appAlloc(sizeof(UsbCtx), 0x40);
    if (!c) {
@@ -890,7 +1062,6 @@ ON_APPLICATION_ENDS()
    if (c) {
       sRun       = false;
       sRumbleLen = 0;
-      
       for (int i = 0; i < 20 && !sRumbleDone; i++) {
          OSSleepTicks(OSMillisecondsToTicks(10));
       }
@@ -905,7 +1076,7 @@ ON_APPLICATION_ENDS()
    }
    memset(&sPad, 0, sizeof(sPad));
 
-   if (sDimSuppressed) {                
+   if (sDimSuppressed) {
       if (sDimWasOn) {
          IMEnableDim();
       }
@@ -956,7 +1127,6 @@ buildButtons(float lx, float ly, float rx, float ry)
    if (sPad.lt > trigLevel) h |= VPAD_BUTTON_ZL;
    if (sPad.rt > trigLevel) h |= VPAD_BUTTON_ZR;
 
-   
    if (lx < -STICK_EMU_LEVEL) h |= VPAD_STICK_L_EMULATION_LEFT;
    if (lx >  STICK_EMU_LEVEL) h |= VPAD_STICK_L_EMULATION_RIGHT;
    if (ly >  STICK_EMU_LEVEL) h |= VPAD_STICK_L_EMULATION_UP;
@@ -967,7 +1137,6 @@ buildButtons(float lx, float ly, float rx, float ry)
    if (ry < -STICK_EMU_LEVEL) h |= VPAD_STICK_R_EMULATION_DOWN;
    return h;
 }
-
 
 /*Guide -> HOME Menu (FUCK THIS THING)*/
 
@@ -1007,12 +1176,11 @@ checkGuideButton(void)
 
 /* HOME Menu support (FUCK THIS^2)*/
 
-static volatile uint32_t sOverlayLatch;   
+static volatile uint32_t sOverlayLatch;
 static volatile bool     sOverlayGuideLatch;
 
 ON_RELEASE_FOREGROUND()
 {
-   
    sInOverlay         = true;
    sOverlayLatch      = 0xFFFFFFFF;        /* resolved on the first menu read */
    sOverlayGuideLatch = true;
@@ -1025,18 +1193,18 @@ ON_ACQUIRED_FOREGROUND()
    /* back in the game */
    sInOverlay = false;
    sPrevHold  = 0;
-   sPrevGuide    = sPad.guide;
-   sProSupportOn = false;      /* re-arm: switch Pro support on again */
+   sPrevGuide     = sPad.guide;
+   sReassertAwake = true;
+   sProSupportOn  = false;      /* re-arm: switch Pro support on again */
    sProMotorOn   = false;
    resetAnnounce();               /* don't treat a held Guide as a new press */
    WHBLogPrintf("wiiredx %u: acquired foreground", msNow());
 }
 
-
 static int32_t
 injectPad(VPADStatus *buffers, int32_t result, VPADReadError *realError, bool inHomeMenu)
 {
-   
+
    if (result <= 0) {
       memset(&buffers[0], 0, sizeof(VPADStatus));
       result     = 1;
@@ -1051,19 +1219,18 @@ injectPad(VPADStatus *buffers, int32_t result, VPADReadError *realError, bool in
    if (inHomeMenu) {
       bool guide = sPad.guide;
       if (sOverlayLatch == 0xFFFFFFFF) {
-         sOverlayLatch = hold;             
+         sOverlayLatch = hold;
       }
-      sOverlayLatch &= hold;               
+      sOverlayLatch &= hold;
       hold &= ~sOverlayLatch;
 
       if (!guide) {
          sOverlayGuideLatch = false;
       }
       if (guide && !sOverlayGuideLatch) {
-         hold |= VPAD_BUTTON_B;            
+         hold |= VPAD_BUTTON_B;
       }
 
-      
       if (sOverlayLatch & (VPAD_STICK_L_EMULATION_LEFT | VPAD_STICK_L_EMULATION_RIGHT |
                            VPAD_STICK_L_EMULATION_UP | VPAD_STICK_L_EMULATION_DOWN)) {
          lx = ly = 0.0f;
@@ -1072,10 +1239,10 @@ injectPad(VPADStatus *buffers, int32_t result, VPADReadError *realError, bool in
       checkGuideButton();
    }
 
-   VPADStatus *s = &buffers[0];                
+   VPADStatus *s = &buffers[0];
    s->hold    |= hold;
-   s->trigger |= hold & ~sPrevHold;            
-   s->release |= sPrevHold & ~hold;            
+   s->trigger |= hold & ~sPrevHold;
+   s->release |= sPrevHold & ~hold;
    sPrevHold   = hold;
 
    /* Whichever device is actually moving a stick wins */
@@ -1098,7 +1265,8 @@ DECL_FUNCTION(int32_t, VPADRead, VPADChan chan, VPADStatus *buffers, uint32_t co
 
    if (chan == VPAD_CHAN_0 && sCfgEnabled && sPad.connected && buffers && count > 0) {
       if (!gamePadMode()) {
-         
+
+         sStatVpad++;
          checkGuideButton();
          enableProSupport();
          announceIfNeeded(sCfgProSlot - 1);
@@ -1113,7 +1281,6 @@ DECL_FUNCTION(int32_t, VPADRead, VPADChan chan, VPADStatus *buffers, uint32_t co
 }
 
 WUPS_MUST_REPLACE(VPADRead, WUPS_LOADER_LIBRARY_VPAD, VPADRead);
-
 
 DECL_FUNCTION(int32_t, VPADRead_HomeMenu, VPADChan chan, VPADStatus *buffers, uint32_t count, VPADReadError *outError)
 {
@@ -1132,8 +1299,6 @@ DECL_FUNCTION(int32_t, VPADRead_HomeMenu, VPADChan chan, VPADStatus *buffers, ui
 
 WUPS_MUST_REPLACE_FOR_PROCESS(VPADRead_HomeMenu, WUPS_LOADER_LIBRARY_VPAD, VPADRead,
                               WUPS_FP_TARGET_PROCESS_HOME_MENU);
-
-
 
 DECL_FUNCTION(int32_t, VPADControlMotor, VPADChan chan, uint8_t *pattern, uint8_t length)
 {
@@ -1163,6 +1328,3 @@ DECL_FUNCTION(void, VPADStopMotor, VPADChan chan)
 
 WUPS_MUST_REPLACE(VPADControlMotor, WUPS_LOADER_LIBRARY_VPAD, VPADControlMotor);
 WUPS_MUST_REPLACE(VPADStopMotor, WUPS_LOADER_LIBRARY_VPAD, VPADStopMotor);
-
-
-

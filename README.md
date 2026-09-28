@@ -9,7 +9,7 @@ WiiredX is an [Aroma](https://aroma.foryour.cafe) plugin. It talks to the contro
 ## Features
 
 * **Wired, so it just works.** Plug the controller into a USB port. Nothing to pair, nothing to re-pair.
-* **Two modes.** Act as the GamePad (works in nearly every game) or as a Pro Controller on player slot 1–4.
+* **Two modes.** Act as the GamePad (works in nearly every game) or as a Pro Controller on player slot 1–4 (experimental).
 * **Rumble**, in both modes, with adjustable strength.
 * **Guide button opens the HOME Menu**, and the pad works inside it.
 * **No mid-game screen dimming.** The console can't see the controller, so it would otherwise dim as though you'd walked away.
@@ -21,7 +21,7 @@ WiiredX is an [Aroma](https://aroma.foryour.cafe) plugin. It talks to the contro
 * A wired Xbox One controller, or a wireless one with a USB data cable
 * A USB cable that carries data
 
-Tested with an Xbox One S controller (`045E:02EA`). Other Xbox One and Series controllers use the same protocol and should work, but some models need extra wake-up packets that aren't implemented yet. If yours doesn't work, reach out and I'll try and figure it out.
+Tested with an Xbox One S controller (`045E:02EA`). Other Xbox One and Series controllers use the same protocol and should work, but some models need extra wake-up packets that aren't implemented yet. If yours doesn't work, [open an issue](../../issues) and I'll try and figure it out.
 
 ## Install
 
@@ -30,7 +30,7 @@ Tested with an Xbox One S controller (`045E:02EA`). Other Xbox One and Series co
 3. Put the card back in the console and boot into Aroma.
 4. Plug in the controller. That's it.
 
-To remove it, delete the file.
+To update, replace the old `wiiredx.wps` with the new one. To remove it, delete the file.
 
 ## Settings
 
@@ -47,7 +47,9 @@ Open the plugin menu with **L + D-pad Down + Minus** on the GamePad, then choose
 |Guide button opens HOME Menu|on / off|on||
 |Keep screen awake|on / off|on|Stops the console dimming while you're playing|
 |Rumble|on / off|on|Self explanatory|
-|Rumble strength|0–100%|55%|Xbox motors are stronger than the GamePad's 55% felt fine to me|
+|Rumble strength|0–100%|55%|Xbox motors are stronger than the GamePad's, 55% felt fine to me|
+|Network log (UDP 4405)|on / off|off|Sends log output over the network, see [DEBUG](#debug)|
+|Verbose log (diagnostics)|on / off|off|Extra detail in the network log, useful for bug reports|
 
 ## Which mode should I use?
 
@@ -55,22 +57,27 @@ Open the plugin menu with **L + D-pad Down + Minus** on the GamePad, then choose
 
 **Pro Controller mode** presents the controller as a separate Wii U Pro Controller on its own player slot, so it can be a second player alongside someone using the GamePad. Not every game accepts Pro Controllers, and some are fussier than others, so try GamePad mode first if a game ignores it.
 
+Pro Controller mode is **experimental**. Known working: Super Smash Bros. for Wii U, Madden NFL 13, and the Wii U Menu. Pick a player slot that no real Wii Remote or Pro Controller is using.
+
 ## Known issues
 
 * **A brief dropout after closing the HOME Menu.** The controller sometimes drops off the USB bus and reconnects as a new device, which takes about a second. WiiredX detects and recovers from this automatically. It's the console or the controller doing it, not the plugin.
 * **The Guide button can't close the HOME Menu.** Only the real HOME button can, because the system detects it at a level plugins can't reach. Use the Close button on screen.
 * **Pro Controller mode varies by game.** Games check for controllers in their own ways.
 * **The touchscreen still needs the real GamePad.**
-* **The system's controller pairing screen won't show the controller.** It isn't a real Bluetooth controller, so it isn't listed there.
+* **The system's controller pairing screen won't show the controller.** It isn't a real Bluetooth controller so it isn't listed there.
 
-## Building from source
+## DEBUG
 
-To watch the plugin's log output while it runs, listen on UDP port 4405 from a PC on the same network. On Windows:
+To watch the plugin's log output while it runs:
+
+1. Turn on **Network log** in the WiiredX settings. It's off by default. Turn on **Verbose log** too if you're reporting a bug.
+2. Listen on UDP port 4405 from a PC on the same network. On Windows:
 
 ```powershell
 $u = New-Object System.Net.Sockets.UdpClient 4405
-$e = New-Object System.Net.IPEndPoint (\[IPAddress]::Any, 0)
-while ($true) { \[Text.Encoding]::ASCII.GetString($u.Receive(\[ref]$e)) }
+$e = New-Object System.Net.IPEndPoint ([IPAddress]::Any, 0)
+while ($true) { [Text.Encoding]::ASCII.GetString($u.Receive([ref]$e)) }
 ```
 
 ## How it works
